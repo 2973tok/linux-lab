@@ -1,0 +1,96 @@
+name: linux-permissions-lab
+
+on:
+  workflow_dispatch:
+
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 01 - Who am I
+        run: |
+          whoami
+          id
+          head -n 4 /etc/os-release
+
+      - name: 02 - Create user
+        run: |
+          sudo adduser --disabled-password --gecos "" devuser
+          echo "devuser:LabPass123" | sudo chpasswd
+          id devuser
+          getent passwd devuser
+          ls -ld /home/devuser
+
+      - name: 03 - Normal user cannot use sudo
+        run: |
+          echo "LabPass123" | sudo -u devuser sudo -S whoami || echo "EXPECTED FAILURE: devuser is not in sudoers"
+
+      - name: 04 - Give sudo with the sudo group
+        run: |
+          sudo usermod -aG sudo devuser
+          groups devuser
+          echo "LabPass123" | sudo -u devuser sudo -S whoami
+          sudo -l -U devuser
+
+      - name: 05 - Take sudo back
+        run: |
+          sudo deluser devuser sudo
+          groups devuser
+          echo "LabPass123" | sudo -u devuser sudo -S whoami || echo "EXPECTED FAILURE: sudo removed"
+
+      - name: 06 - Limited sudo with sudoers.d and visudo check
+        run: |
+          echo 'devuser ALL=(ALL) NOPASSWD: /usr/bin/systemctl status ssh' | sudo tee /tmp/devuser_rule > /dev/null
+          sudo visudo -cf /tmp/devuser_rule
+          sudo install -m 440 -o root -g root /tmp/devuser_rule /etc/sudoers.d/devuser
+          ls -l /etc/sudoers.d/devuser
+          sudo -l -U devuser
+          sudo -u devuser sudo -n /usr/bin/systemctl status ssh --no-pager || true
+          sudo -u devuser sudo -n /usr/bin/whoami || echo "EXPECTED FAILURE: only 'systemctl status ssh' is allowed"
+
+      - name: 07 - Shared folder with setgid
+        run: |
+          sudo adduser --disabled-password --gecos "" alice
+          sudo adduser --disabled-password --gecos "" bob
+          sudo groupadd developers
+          sudo usermod -aG developers alice
+          sudo usermod -aG developers bob
+          sudo mkdir /srv/shared_project
+          sudo chown root:developers /srv/shared_project
+          sudo chmod 2770 /srv/shared_project
+          ls -ld /srv/shared_project
+          echo "--- alice creates a file with umask 002 ---"
+          sudo -u alice sh -c 'umask 002; touch /srv/shared_project/alice_ok.txt'
+          echo "--- alice creates a file with umask 022 ---"
+          sudo -u alice sh -c 'umask 022; touch /srv/shared_project/alice_locked.txt'
+          ls -l /srv/shared_project
+          sudo -u bob sh -c 'echo "bob was here" >> /srv/shared_project/alice_ok.txt'
+          cat /srv/shared_project/alice_ok.txt
+          sudo -u bob sh -c 'echo "bob was here" >> /srv/shared_project/alice_locked.txt' || echo "EXPECTED FAILURE: group has no write permission on alice_locked.txt"
+          sudo -u devuser ls /srv/shared_project || echo "EXPECTED FAILURE: devuser is not in developers"
+
+      - name: 08 - chmod, chown and chown -R
+        run: |
+          mkdir -p ~/test_folder/sub
+          touch ~/test_folder/a.txt ~/test_folder/sub/b.txt
+          echo "--- before ---"
+          ls -lR ~/test_folder
+          sudo chown -R devuser:developers ~/test_folder
+          echo "--- after chown -R ---"
+          ls -lR ~/test_folder
+          sudo chmod 600 ~/test_folder/a.txt
+          sudo chmod 750 ~/test_folder/sub
+          echo "--- after chmod ---"
+          stat -c '%a %U:%G %n' ~/test_folder/a.txt ~/test_folder/sub
+
+      - name: 09 - Lock and delete user, find orphan files
+        run: |
+          sudo usermod -L devuser
+          echo "Shadow password field now starts with:"
+          sudo grep '^devuser:' /etc/shadow | cut -d: -f2 | cut -c1-3
+          echo "--- files owned by devuser ---"
+          sudo find / -xdev -user devuser 2>/dev/null
+          sudo deluser --remove-home devuser
+          id devuser || echo "EXPECTED: user is gone"
+          echo "--- orphan files (no owner) ---"
+          sudo find / -xdev -nouser 2>/dev/null || true
