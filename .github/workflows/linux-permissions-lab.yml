@@ -43,7 +43,7 @@ jobs:
           echo 'devuser ALL=(ALL) NOPASSWD: /usr/bin/systemctl status ssh' | sudo tee /tmp/devuser_rule > /dev/null
           sudo visudo -cf /tmp/devuser_rule
           sudo install -m 440 -o root -g root /tmp/devuser_rule /etc/sudoers.d/devuser
-          ls -l /etc/sudoers.d/devuser
+          sudo ls -l /etc/sudoers.d/devuser
           sudo -l -U devuser
           sudo -u devuser sudo -n /usr/bin/systemctl status ssh --no-pager || true
           sudo -u devuser sudo -n /usr/bin/whoami || echo "EXPECTED FAILURE: only 'systemctl status ssh' is allowed"
@@ -63,9 +63,9 @@ jobs:
           sudo -u alice sh -c 'umask 002; touch /srv/shared_project/alice_ok.txt'
           echo "--- alice creates a file with umask 022 ---"
           sudo -u alice sh -c 'umask 022; touch /srv/shared_project/alice_locked.txt'
-          ls -l /srv/shared_project
+          sudo ls -l /srv/shared_project
           sudo -u bob sh -c 'echo "bob was here" >> /srv/shared_project/alice_ok.txt'
-          cat /srv/shared_project/alice_ok.txt
+          sudo cat /srv/shared_project/alice_ok.txt
           sudo -u bob sh -c 'echo "bob was here" >> /srv/shared_project/alice_locked.txt' || echo "EXPECTED FAILURE: group has no write permission on alice_locked.txt"
           sudo -u devuser ls /srv/shared_project || echo "EXPECTED FAILURE: devuser is not in developers"
 
