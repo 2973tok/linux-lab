@@ -1,0 +1,137 @@
+name: linux-users-groups-lab
+
+on:
+  workflow_dispatch:
+
+env:
+  ALL_USERS: "alice bob carol dave eve frank grace heidi ivan judy kate"
+
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 01 - Create groups
+        run: |
+          sudo groupadd testers
+          sudo groupadd developers
+          sudo groupadd ops
+          getent group testers developers ops
+
+      - name: 02 - Create users with an initial password
+        run: |
+          for u in $ALL_USERS; do
+            sudo adduser --disabled-password --gecos "" "$u"
+            echo "$u:Initial#123" | sudo chpasswd
+          done
+          echo "--- users with uid >= 1000 ---"
+          getent passwd | awk -F: '$3>=1000 && $3<65000 {print $1, "uid="$3}'
+
+      - name: 03 - Add members (testers=3, developers=4, ops=5)
+        run: |
+          for u in eve frank grace; do sudo usermod -aG testers "$u"; done
+          for u in alice bob carol dave; do sudo usermod -aG developers "$u"; done
+          for u in heidi ivan judy kate alice; do sudo usermod -aG ops "$u"; done
+          echo "--- group members ---"
+          getent group testers developers ops
+          echo "--- groups per user ---"
+          for u in $ALL_USERS; do echo "$u: $(id -Gn $u)"; done
+
+      - name: 04 - Password policy and force change at first login
+        run: |
+          for u in $ALL_USERS; do
+            sudo chage -d 0 "$u"
+            sudo chage -m 1 -M 90 -W 14 "$u"
+          done
+          echo "--- chage -l alice ---"
+          sudo chage -l alice
+          echo "--- passwd -S (P = has password, L = locked, NP = no password) ---"
+          sudo passwd -S alice
+          sudo passwd -S bob
+
+      - name: 05 - Admin resets a password
+        run: |
+          echo "carol:NewPass#456" | sudo chpasswd
+          sudo chage -d 0 carol
+          sudo chage -l carol | head -n 1
+          sudo passwd -S carol
+
+      - name: 06 - Change memberships
+        run: |
+          echo "--- before ---"
+          getent group developers testers
+          sudo deluser dave developers
+          sudo usermod -aG testers dave
+          sudo deluser carol developers
+          echo "--- after: dave moved to testers, carol left developers ---"
+          getent group developers testers
+          id dave
+          id carol
+
+      - name: 07 - Group administrator with gpasswd
+        run: |
+          sudo gpasswd -A bob developers
+          echo "--- gshadow (3rd field = group admins) ---"
+          sudo getent gshadow developers
+          echo "--- bob adds heidi to developers without sudo ---"
+          sudo -u bob gpasswd -a heidi developers
+          getent group developers
+          echo "--- bob tries to add heidi to ops (not his group) ---"
+          sudo -u bob gpasswd -a heidi ops || echo "EXPECTED FAILURE: bob is not an admin of ops"
+          sudo gpasswd -d heidi developers
+          getent group developers
+
+      - name: 08 - Group folders with setgid and access matrix
+        run: |
+          for g in developers testers ops; do
+            sudo mkdir -p "/srv/$g"
+            sudo chown root:"$g" "/srv/$g"
+            sudo chmod 2770 "/srv/$g"
+          done
+          sudo ls -ld /srv/developers /srv/testers /srv/ops
+          sudo -u alice touch /srv/developers/alice_note.txt
+          sudo -u kate touch /srv/ops/kate_report.txt
+          sudo ls -l /srv/developers /srv/ops
+          echo "--- who can enter which folder ---"
+          for d in developers testers ops; do
+            for u in $ALL_USERS; do
+              if sudo -u "$u" ls "/srv/$d" > /dev/null 2>&1; then r=ALLOWED; else r=DENIED; fi
+              printf '%-8s -> /srv/%-11s %s\n' "$u" "$d" "$r"
+            done
+          done
+
+      - name: 09 - Lock, expire, nologin
+        run: |
+          sudo usermod -L judy
+          echo "judy password status:"
+          sudo passwd -S judy
+          sudo chage -E 0 ivan
+          echo "ivan account expiry:"
+          sudo chage -l ivan | grep "Account expires"
+          sudo usermod -s /usr/sbin/nologin frank
+          echo "frank entry:"
+          getent passwd frank
+          echo "--- unlock judy ---"
+          sudo usermod -U judy
+          sudo passwd -S judy
+
+      - name: 10 - Delete a user, check orphan files, delete groups
+        run: |
+          echo "--- kate files before delete ---"
+          sudo find / -xdev -user kate 2>/dev/null
+          sudo deluser --remove-home kate
+          echo "--- /srv/ops after kate was deleted (numeric ids) ---"
+          sudo ls -ln /srv/ops
+          echo "--- orphan files ---"
+          sudo find / -xdev -nouser 2>/dev/null || true
+          echo "--- try to delete a group that still has members ---"
+          sudo delgroup --only-if-empty ops || echo "EXPECTED FAILURE: ops still has members"
+          echo "--- remove all testers members, then the group ---"
+          for u in eve frank grace dave; do sudo deluser "$u" testers; done
+          sudo delgroup --only-if-empty testers
+          getent group testers || echo "EXPECTED: testers group is gone"
+
+      - name: 11 - Final report
+        run: |
+          getent passwd | awk -F: '$3>=1000 && $3<65000 {print $1}' | while read -r u; do
+            echo "$u: $(id -Gn "$u")"
+          done
